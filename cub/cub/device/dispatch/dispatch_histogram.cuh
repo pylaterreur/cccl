@@ -20,30 +20,31 @@
 #  pragma system_header
 #endif // no system header
 
-#include <cub/agent/agent_histogram.cuh>
+#include <cub/detail/it_traits.cuh>
+#include <cub/detail/launcher/cuda_runtime.cuh>
 #include <cub/detail/logging.cuh>
 #include <cub/device/dispatch/kernels/kernel_histogram.cuh>
 #include <cub/device/dispatch/tuning/tuning_histogram.cuh>
 #include <cub/grid/grid_queue.cuh>
-#include <cub/thread/thread_search.cuh>
 #include <cub/util_debug.cuh>
 #include <cub/util_device.cuh>
-#include <cub/util_math.cuh>
 #include <cub/util_temporary_storage.cuh>
-#include <cub/util_type.cuh>
 
 #include <cuda/__cmath/ceil_div.h>
+#include <cuda/__device/compute_capability.h>
 #include <cuda/__functional/proclaim_return_type.h>
 #include <cuda/std/__algorithm/copy.h>
 #include <cuda/std/__algorithm/min.h>
 #include <cuda/std/__algorithm/transform.h>
-#include <cuda/std/__tuple_dir/apply.h>
+#include <cuda/std/__cstddef/types.h>
+#include <cuda/std/__limits/numeric_limits.h>
 #include <cuda/std/__type_traits/conditional.h>
+#include <cuda/std/__type_traits/integral_constant.h>
+#include <cuda/std/__type_traits/is_integral.h>
 #include <cuda/std/__type_traits/is_signed.h>
 #include <cuda/std/__type_traits/is_void.h>
+#include <cuda/std/__utility/cmp.h>
 #include <cuda/std/array>
-#include <cuda/std/limits>
-#include <cuda/std/tuple>
 
 #include <nv/target>
 
@@ -145,8 +146,15 @@ struct DeviceHistogramKernelSource
     if constexpr (::cuda::std::is_integral_v<CommonT>)
     {
       using IntArithmeticT = typename TransformsT::ScaleTransform::IntArithmeticT;
-      return static_cast<IntArithmeticT>(upper_level[channel] - lower_level[channel])
-           > (::cuda::std::numeric_limits<IntArithmeticT>::max() / static_cast<IntArithmeticT>(num_bins));
+      // The unary plus promotes plain char to int, which cuda::std::cmp_greater requires
+      if (::cuda::std::cmp_greater(num_bins, +::cuda::std::numeric_limits<CommonT>::max()))
+      {
+        return true;
+      }
+      const auto upper_level_cast = static_cast<IntArithmeticT>(upper_level[channel]);
+      const auto lower_level_cast = static_cast<IntArithmeticT>(lower_level[channel]);
+      const auto range            = static_cast<IntArithmeticT>(upper_level_cast - lower_level_cast);
+      return range > (::cuda::std::numeric_limits<IntArithmeticT>::max() / static_cast<IntArithmeticT>(num_bins));
     }
     else
     {
@@ -296,9 +304,9 @@ CUB_RUNTIME_FUNCTION _CCCL_VISIBILITY_HIDDEN _CCCL_FORCEINLINE auto dispatch(
   const GridQueue<int> tile_queue(allocations[NUM_ALLOCATIONS - 1]);
 
   // Wrap arrays so we can pass them by-value to the kernel
-  ::cuda::std::array<CounterT*, NumActiveChannels> d_privatized_histograms_wrapper;
-  ::cuda::std::array<int, NumActiveChannels> num_privatized_bins_wrapper;
-  ::cuda::std::array<int, NumActiveChannels> num_output_bins_wrapper;
+  ::cuda::std::array<CounterT*, NumActiveChannels> d_privatized_histograms_wrapper{};
+  ::cuda::std::array<int, NumActiveChannels> num_privatized_bins_wrapper{};
+  ::cuda::std::array<int, NumActiveChannels> num_output_bins_wrapper{};
 
   auto* typed_allocations = reinterpret_cast<CounterT**>(allocations);
   ::cuda::std::copy(typed_allocations, typed_allocations + NumActiveChannels, d_privatized_histograms_wrapper.begin());
@@ -809,7 +817,7 @@ CUB_RUNTIME_FUNCTION cudaError_t dispatch_range(
     using OutputDecodeOpT =
       ::cuda::std::conditional_t<is_signed, sample_cast_transform<search_transform, SampleT>, search_transform>;
 
-    ::cuda::std::array<int, NumActiveChannels> num_privatized_levels;
+    ::cuda::std::array<int, NumActiveChannels> num_privatized_levels{};
     const ::cuda::std::array<PrivatizedDecodeOpT, NumActiveChannels> privatized_decode_op{};
     ::cuda::std::array<OutputDecodeOpT, NumActiveChannels> output_decode_op{};
     int max_levels = num_output_levels[0];
@@ -991,7 +999,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch_even(
 
     using CommonT = typename TransformsT::ScaleTransform::CommonT;
 
-    ::cuda::std::array<int, NumActiveChannels> num_privatized_levels;
+    ::cuda::std::array<int, NumActiveChannels> num_privatized_levels{};
     const ::cuda::std::array<PrivatizedDecodeOpT, NumActiveChannels> privatized_decode_op{};
     ::cuda::std::array<OutputDecodeOpT, NumActiveChannels> output_decode_op{};
     int max_levels = num_output_levels[0];
@@ -1001,7 +1009,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch_even(
       num_privatized_levels[channel] = 257;
 
       const int num_levels = num_output_levels[channel];
-      if (kernel_source.MayOverflow(static_cast<CommonT>(num_levels - 1), upper_level, lower_level, channel))
+      if (kernel_source.MayOverflow(num_levels - 1, upper_level, lower_level, channel))
       {
         if (!d_temp_storage)
         {
@@ -1067,7 +1075,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch_even(
     for (int channel = 0; channel < NumActiveChannels; ++channel)
     {
       const int num_levels = num_output_levels[channel];
-      if (kernel_source.MayOverflow(static_cast<CommonT>(num_levels - 1), upper_level, lower_level, channel))
+      if (kernel_source.MayOverflow(num_levels - 1, upper_level, lower_level, channel))
       {
         if (!d_temp_storage)
         {

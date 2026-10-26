@@ -5,6 +5,9 @@ set(
   stream_task_prototype.cu
   graph_task_prototype.cu
   cuda_try_ambiguous.cu
+  es_retry_on_past.cu
+  es_defer_on_status.cu
+  es_shift_unknown_return.cu
 )
 
 ## cudax_add_stf_static_assert_test
@@ -22,7 +25,13 @@ function(cudax_stf_add_static_assert_test target_name_var source)
 
   set(test_target cudax.tests.stf.error.${filename})
 
-  cccl_add_executable(${test_target} SOURCES ${source} NO_METATARGETS)
+  # These TUs fail to compile on purpose; there is nothing for clang-tidy to check.
+  cccl_add_executable(
+    ${test_target}
+    SOURCES ${source}
+    NO_METATARGETS
+    NO_CLANG_TIDY
+  )
   cudax_stf_configure_target(${test_target} ${ARGN})
   target_link_libraries(${test_target} PRIVATE cudax.compiler_interface)
   cccl_add_xfail_compile_target_test(
